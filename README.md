@@ -15,7 +15,6 @@ nxjobs/
 │       ├── nxjobs.def                 # container recipe
 │       ├── build.sh                   # build nxjobs.sif
 │       ├── run.sh                     # launch the app (handles SSH submission)
-│       └── nxjobs_ssh.env.example     # template for SSH submission settings
 ├── .gitignore
 └── README.md
 ```
