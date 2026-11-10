@@ -1,0 +1,110 @@
+# Apptainer definition for the NxReduce Job Submission app.
+#
+# Multi-stage, mirroring the OCI Containerfile:
+#   * Bootstrap stage "build"  -> compiles the venv with the full toolchain.
+#   * Final stage              -> slim runtime, copies ONLY the finished venv.
+#
+# This produces a .sif for running directly on beamline / HPC nodes (where
+# Apptainer, not Kubernetes, is the norm). For Kubernetes use the OCI image.
+#
+# BUILD CONTEXT (important): this copy sits at
+#   script-nxsjobs/final/deploy/apptainer/nxjobs.def
+# and the app it serves is the sibling file  script-nxsjobs/final/nxjobs-app.py
+# so the build CONTEXT (working directory at build time) MUST be
+#   script-nxsjobs/final/   — the folder that directly contains nxjobs-app.py
+# and the deploy/ folder. build.sh handles that for you.
+#
+# Build (needs Apptainer >= 1.1 for multi-stage):
+#   cd script-nxsjobs/final
+#   apptainer build deploy/apptainer/nxjobs.sif deploy/apptainer/nxjobs.def
+#   # ...or just:  deploy/apptainer/build.sh
+#
+# Run (bind-mount the real filesystem; Apptainer maps your user, so file
+# ownership on /nfs/chess "just works"):
+#   apptainer run --bind /nfs/chess:/nfs/chess deploy/apptainer/nxjobs.sif
+#   # ...or just:  deploy/apptainer/run.sh
+
+# ---------------------------------------------------------------------------
+# Stage 1 — build: compile wheels into /opt/venv
+# ---------------------------------------------------------------------------
+Bootstrap: docker
+From: python:3.12-slim
+Stage: build
+
+%files
+    deploy/requirements.txt /tmp/requirements.txt
+
+%post
+    set -eu
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential libhdf5-dev pkg-config curl ca-certificates cargo
+    rm -rf /var/lib/apt/lists/*
+
+    python -m venv /opt/venv
+    . /opt/venv/bin/activate
+    pip install --no-cache-dir --upgrade pip wheel setuptools
+    # Pins installed inline: Apptainer does not make %files-staged files
+    # available during %post, so we don't read /tmp/requirements.txt here.
+    # Keep these in sync with deploy/requirements.txt.
+    pip install --no-cache-dir flask==3.0.3 paramiko==3.4.1 h5py==3.11.0 gunicorn==22.0.0
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime: slim image, copy only the finished venv + the app
+# ---------------------------------------------------------------------------
+Bootstrap: docker
+From: python:3.12-slim
+Stage: final
+
+%files from build
+    /opt/venv /opt/venv
+
+%files
+    nxjobs-app.py  /app/nxjobs-app.py
+    deploy/wsgi.py /app/wsgi.py
+
+%post
+    set -eu
+    apt-get update
+    # Essential runtime tools: ssh client (+ sshpass fallback) + tini. These must
+    # install, so keep them separate from the (optional) system HDF5 library.
+    apt-get install -y --no-install-recommends \
+        openssh-client sshpass tini
+    # HDF5 shared lib is BEST-EFFORT: the h5py PyPI wheel bundles its own copy of
+    # libhdf5, so the app runs even if no system package is installed. The package
+    # name drifts across Debian releases (libhdf5-103 -> libhdf5-103-1 ->
+    # libhdf5-310 on the current python:3.12-slim base), so try the names in order
+    # and never fail the build if none is available.
+    apt-get install -y --no-install-recommends libhdf5-310 \
+      || apt-get install -y --no-install-recommends libhdf5-103-1 \
+      || apt-get install -y --no-install-recommends libhdf5-103 \
+      || echo "WARN: no system libhdf5 package found; relying on the bundled h5py HDF5."
+    rm -rf /var/lib/apt/lists/*
+    python -m compileall -q /app || true
+
+%environment
+    export PATH="/opt/venv/bin:$PATH"
+    export PYTHONUNBUFFERED=1
+    export NXJOBS_APP_PATH=/app/nxjobs-app.py
+    export GUNICORN_THREADS=32
+    export GUNICORN_TIMEOUT=120
+
+%runscript
+    cd /app
+    exec gunicorn --worker-class gthread --workers 1 \
+        --threads "${GUNICORN_THREADS:-32}" --timeout "${GUNICORN_TIMEOUT:-120}" \
+        --access-logfile - --error-logfile - \
+        --bind 0.0.0.0:5050 wsgi:app
+
+%labels
+    Maintainer  CHESS QM2 / ID4B
+    App         NxReduce Job Submission
+    Component   web
+
+%help
+    NxReduce Job Submission web app (Flask). Serves on port 5050.
+    Bind-mount the shared filesystem, e.g.:
+        apptainer run --bind /nfs/chess:/nfs/chess nxjobs.sif
+    Submits cluster jobs via qsub-over-SSH (set the remote host/user in the UI's
+    General tab). The qstat-based "Jobs Needing Attention" / Auto-Submit requeue
+    features are inactive unless qstat is available in the container.
