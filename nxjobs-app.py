@@ -4452,6 +4452,6 @@ if __name__ == "__main__":
     # serves only one request at a time, so a Browse (/browse_dir) request made
     # while a poll is in flight gets blocked and errors out — which looked like
     # "browse works once, then fails." Threading lets those overlap cleanly.
-    host = os.environ.get("FLASK_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    port = int(os.environ.get("FLASK_PORT", "5000"))
+    host = os.environ.get("NXJOBS_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.environ.get("NXJOBS_PORT", "5000"))
     app.run(host=host, port=port, debug=False, threaded=True)
