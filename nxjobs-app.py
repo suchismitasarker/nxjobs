@@ -4452,4 +4452,4 @@ if __name__ == "__main__":
     # serves only one request at a time, so a Browse (/browse_dir) request made
     # while a poll is in flight gets blocked and errors out — which looked like
     # "browse works once, then fails." Threading lets those overlap cleanly.
-    app.run(host="0.0.0.0", port=5050, debug=False, threaded=True)
+    app.run(host="127.0.0.1", port=8888, debug=False, threaded=True)
